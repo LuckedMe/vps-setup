@@ -221,7 +221,7 @@ With the Cloudflare Tunnel (step 18) the "Stage 2" labels stay commented out: TL
     - RAM: AIO wants 4 GB+ (8 GB comfortable). Make sure the swap from step 6 exists. Disk: Nextcloud data lives in `ncdata/`, check `df -h /home`.
     - Cloudflare **free/pro plan limits request bodies to 100 MB**: files larger than that cannot be uploaded through `https://cloud.lucked.me` (the desktop/mobile clients use chunked upload of 10 MB chunks, so they work; the browser upload of big files may fail). Larger transfers: use the sync clients, or use Nextcloud directly over Tailscale (`https://100.91.57.78:...`, not set up here).
     - Cloudflare's terms discourage serving large media through the proxy; for a family cloud with documents and photos this is fine, a video streaming service is not.
-    - Nextcloud Talk needs the TURN port `3478` (UDP/TCP), which cannot pass a Cloudflare tunnel. Disable Talk in the AIO UI (19.6) or accept that calls work only inside the tailnet.
+    - Nextcloud Talk needs the TURN port `3478` (UDP/TCP), which cannot pass a Cloudflare tunnel. Without a TURN server on a public IP calls ring but cannot be answered. Either keep Talk off or set up TURN (19.11).
     - Ubuntu 24.04 and Docker Engine from step 8 are enough; AIO needs no extra packages. Do not install the snap Docker.
 
     **19.1 Prepare Traefik for the host route** (server, `infrastructure/`)
@@ -324,7 +324,7 @@ With the Cloudflare Tunnel (step 18) the "Stage 2" labels stay commented out: TL
     1. Open `https://100.91.57.78:8080` (accept the certificate warning). The page shows a **passphrase** (a 8-word string): **save it in a password manager now**; it is the only way into the admin UI and shows only once. It can be read later with `docker exec nextcloud-aio-mastercontainer grep password /mnt/docker-aio-config/data/configuration.json`.
     2. Log in with the passphrase. In "New AIO instance" enter the domain `cloud.lucked.me` and press **Submit domain**.
        - AIO checks the domain by requesting it from the VPS (through Cloudflare and the tunnel back to its own Apache). If that fails ("Domain does not point to this server"), do not fight it: set `SKIP_DOMAIN_VALIDATION: "true"` in the compose file, `docker compose up -d` and submit again. The domain is then trusted without the check. The check only guards against a mistyped domain; with a tunnel the DNS record is managed by Cloudflare.
-    3. Choose the optional containers. Recommended for this VPS: **Nextcloud Office (Collabora)** if there is RAM (it adds ~1.5 GB); **ClamAV off**, **Fulltextsearch off**, **Imaginary on** (faster previews), **Talk off** (19.0), **Whiteboard** optional.
+    3. Choose the optional containers. Recommended for this VPS: **Nextcloud Office (Collabora)** if there is RAM (it adds ~1.5 GB); **ClamAV off**, **Fulltextsearch off**, **Imaginary on** (faster previews), **Talk off** unless TURN is set up (19.11), **Whiteboard** optional.
     4. Pick a timezone (the VPS timezone from step 1) and press **Download and start containers**. It pulls ~15 images; first start takes 5-15 minutes. Wait until every container shows green and the **Open your Nextcloud** button appears. The UI also shows the initial admin username `admin` and a generated **password**: save it.
     5. Open `https://cloud.lucked.me` from outside the tailnet (a phone on mobile data). Log in as `admin`, change the password, create your own user.
 
@@ -363,6 +363,11 @@ With the Cloudflare Tunnel (step 18) the "Stage 2" labels stay commented out: TL
     curl -sk -o /dev/null -w '%{http_code}\n' https://<public-ip-or-LAN>:8080   # not reachable from outside (only the Tailscale IP answers)
     ```
     Then in the browser: log in, upload a 5 MB file, open it in Collabora if enabled, create a share link and open it in a private window.
+
+    **19.11 Nextcloud Talk: calls ring but *Accept* does nothing** (see docs/vps-setup.md, 19.11 for the full text)
+    - Cause: WebRTC media needs TURN (3478 tcp+udp); the VPS has no public IP, a Cloudflare-proxied `cloud` name does not carry 3478, and ports/NAT/`external-ip`/secret may be wrong.
+    - Checks: `occ talk:turn:list`, `dig +short turn.<domain>` (not a Cloudflare IP), `nc -vz`, the trickle-ICE page must show a `relay` candidate.
+    - Fix A (recommended): coturn (`network_mode: host`, `use-auth-secret`, `external-ip`, relay ports 49160-49200/udp) on a separate host with a public IP, DNS-only A record `turn`, then `occ talk:stun:add` / `occ talk:turn:add`. Fix B: AIO Talk container, only with a public IP and a grey-cloud record. Also check Android battery restrictions, push reachability, clock sync.
 
     **19.10 Rollback / removal**
     - Take the site offline only: Zero Trust → tunnel `vps` → delete the `cloud` route, or remove `dynamic/cloud.yaml`.
