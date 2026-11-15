@@ -18,10 +18,12 @@ Structure on the server (user `dad`):
 │   └── letsencrypt/dad.json   # certificates, chmod 600
 └── www/
     ├── vacancy-grabber/       # git clone of the project
-    └── cloud/                 # Nextcloud All-in-One (compose file + data), step 19
-        ├── docker-compose.yaml
-        ├── .env
-        └── ncdata/            # Nextcloud user data (NEXTCLOUD_DATADIR)
+    ├── cloud/                 # Nextcloud All-in-One (compose file + data), step 19
+    │   ├── docker-compose.yaml
+    │   ├── .env
+    │   └── ncdata/            # Nextcloud user data (NEXTCLOUD_DATADIR)
+    └── cms/                   # CMS admin (git clone of vtsot/cms-admin), step 22
+        └── .env.prod.local        # HTTP_PORT=172.17.0.1:8081
                                # (future: site1.com/, sub-1.site1.com/ ...)
 ```
 
@@ -31,7 +33,8 @@ Structure on the server (user `dad`):
 - `100.91.57.78` is the **Tailscale** IP of the VPS: reachable only inside the tailnet (SSH, admin), **not** from the internet
 - the VPS has **no public IP**, so an A record + Let's Encrypt cannot work. The domain is published with a **Cloudflare Tunnel** (`cloudflared` container): an outbound connection from the VPS to Cloudflare. Cloudflare terminates HTTPS and does the HTTP→HTTPS redirect.
 - project: `cloud` (Nextcloud All-in-One); server folder: `/home/dad/workspace/www/cloud`; domain `cloud.lucked.me` (same zone, same tunnel, a second public hostname; change it if another name is wanted). The AIO admin interface is **not** public: only over Tailscale, `https://100.91.57.78:8080`.
-- the project already runs by the Tailscale IP from that same folder, so step 18 only switches it to the domain (no folder move, the database and volumes are untouched)
+- project: `cms` (CMS admin, repo `vtsot/cms-admin`); server folder: `/home/dad/workspace/www/cms`; one domain `cms.lucked.me` (main), `cms.lucked.me/admin` (admin), `cms.lucked.me/api` (API), same zone and tunnel (step 22)
+- the `cloud` project already runs by the Tailscale IP from that same folder, so step 18 only switches it to the domain (no folder move, the database and volumes are untouched)
 
 ```
 Browser ──https──► Cloudflare edge (certificate, "Always Use HTTPS")
@@ -46,7 +49,11 @@ Consequences:
 - The tunnel creates the DNS record itself (proxied CNAME, orange cloud is mandatory for tunnels).
 
 ## Deliverables
-1. **`docs/vps-setup.md`**: new file, a detailed guide with all commands.
+1. **Guides with all commands, split by project** (step numbers are kept across files, so cross-references stay valid):
+   - `docs/vps-setup.md`: common part: intro and project index, steps 1–10 (server, Docker, Traefik), step 18 shared tunnel (18.1–18.3, 18.7), step 20 (adding a project), step 21 common troubleshooting.
+   - `docs/projects/vacancy-grabber.md`: steps 11–17, the project part of step 18 (18.4–18.6, 18.8, 18.9), its cheat sheet and troubleshooting.
+   - `docs/projects/cloud.md`: step 19 (Nextcloud AIO), its cheat sheet and troubleshooting.
+   - `docs/projects/cms.md`: step 22 (cms).
 2. **`docs/infrastructure/docker-compose.yaml`**: Traefik template, copied to `/home/dad/workspace/infrastructure/` on the server.
 3. **`docker-compose.prod.yaml`**: remove `VIRTUAL_*`/`LETSENCRYPT_HOST`, add Traefik labels to `nginx`.
 4. **`.env.prod.dist`**: `APP_DOMAIN` = IP by default, `DEFAULT_URI=http://<IP>/`, comments about switching to a domain.
@@ -393,10 +400,17 @@ With the Cloudflare Tunnel (step 18) the "Stage 2" labels stay commented out: TL
     - Nextcloud Overview warns about reverse proxy headers / wrong IPs: `trusted_proxies` (19.6) and `trustedips` (18.3).
     - AIO passphrase lost: `docker exec nextcloud-aio-mastercontainer grep password /mnt/docker-aio-config/data/configuration.json`.
     - Cannot find AIO logs: `docker logs nextcloud-aio-mastercontainer`, `docker logs nextcloud-aio-apache`, `docker logs nextcloud-aio-nextcloud`.
+22. **Project `cms` in `/home/dad/workspace/www/cms`**, one domain split by path: `cms.lucked.me` (main, public client site), `cms.lucked.me/admin` (admin section), `cms.lucked.me/api` (API between the clients and the admin functionality). Full commands: `docs/vps-setup.md`, step 22.
+    - Same Traefik + Cloudflare Tunnel; **one** tunnel route (Subdomain `cms`, `HTTP`, `traefik:80`, Path empty). `cms.lucked.me` is one level deep, so the free Universal SSL certificate covers it (the earlier `admin.cms` / `api.cms` plan needed a paid certificate and is dropped).
+    - `cms-admin` (`git@github.com:vtsot/cms-admin.git`) already serves `/admin` (Sonata, elFinder) and `/api` (site API, JWT) by path and has static files in `/assets`, `/bundles`, `/uploaded`; it has no host routing. Its `docker-compose.prod.yaml` publishes `${HTTP_PORT:-80}:80` and has no Traefik labels. **No compose override and no repo change** (same pattern as `cloud`): `HTTP_PORT=172.17.0.1:8081` in `.env.prod.local` publishes nginx on the docker0 gateway only, ufw allows `172.16.0.0/12` to port 8081, and the Traefik file-provider route `infrastructure/dynamic/cms.yaml` (template `docs/infrastructure/dynamic/cms.yaml`) sends ``Host(`cms.lucked.me`) && (PathPrefix(`/admin`) || PathPrefix(`/api`) || PathPrefix(`/assets`) || PathPrefix(`/bundles`) || PathPrefix(`/uploaded`))`` to `http://host.docker.internal:8081` (entrypoint `web`, no redirect, no certresolver). Compose project name fixed by the repo (`name: cms-admin-prod`). No shell alias: commands are written out in full (`docker compose -f docker-compose.prod.yaml --env-file .env.prod.local ...` in the project folder).
+    - 22.0 requirements; 22.1 one tunnel route `cms`; 22.2 clone into `www/cms` (own Deploy key + `github-cms` ssh alias); 22.3 `.env.prod.local` (`HTTP_PORT=172.17.0.1:8081`, `DEFAULT_URI=https://cms.lucked.me/`, `CORS_ALLOW_ORIGIN=^https://cms\.lucked\.me$`, generated secrets); 22.4 ufw rule, `dynamic/cms.yaml` route (+ optional `/` → `/admin` redirect until the client exists); 22.5 `cms up -d --build` (migrations at start, optional `--profile worker`); 22.6 administrator; 22.7 verify; 22.8 update; 22.9 backups (`backup-cms.sh`, cron 03:10); 22.10 rollback + troubleshooting; 22.11 client site on `/`.
+    - Main domain root `/`: served by the separate `cms-client` app (`git@github.com:vtsot/cms-client.git`, talks to `https://cms.lucked.me/api`). It has **no production Dockerfile/compose yet** and depends on the local `cms-admin-client-bundle`, so 22.11 describes the wiring (folder `www/cms/client`, router `cms-client` with `priority=1` so the admin route wins for its paths, env vars) to apply once a prod image exists. Its own static files must not use `/assets`, `/bundles`, `/uploaded`.
+    - Assumptions to confirm: that `cms.lucked.me/` is the `cms-client` app; whether the `messenger-worker` is needed; how the first admin user is created.
 
 ## Files touched
 - New: `docs/vps-setup.md`, `docs/infrastructure/docker-compose.yaml`, `docs/infrastructure/.env.dist`, `plans/vps-setup.md`
 - New for `cloud` (step 19): `docs/cloud/docker-compose.yaml`, `docs/cloud/.env.dist`, `docs/infrastructure/dynamic/cloud.yaml` (Traefik file-provider route); `docs/infrastructure/docker-compose.yaml` also gets the file provider, `extra_hosts`, `readTimeout=0` and the `./dynamic` volume
+- For `cms` (step 22): `docs/projects/cms.md` and the new template `docs/infrastructure/dynamic/cms.yaml`; the backup script lives on the server and is shown inline
 - Edited: `docker-compose.prod.yaml` (Traefik labels instead of `VIRTUAL_*`), `.env.prod.dist`, `readme.md`
 - Follow-ups for the domain/tunnel (step 18): `docs/infrastructure/docker-compose.yaml` (`cloudflared` service + `forwardedheaders.trustedips`), `docs/infrastructure/.env.dist` (`TUNNEL_TOKEN=`), `.env.prod.dist` (example domain `vacancy-grabber.lucked.me`), `docs/vps-setup.md` (same step 18)
 
