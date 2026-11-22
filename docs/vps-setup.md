@@ -7,6 +7,7 @@ A step-by-step guide for the **common part** of the server: clean VPS → Docker
 | `vacancy-grabber` | [projects/vacancy-grabber.md](projects/vacancy-grabber.md) (steps 11–17 and the project part of 18) | `https://vacancy-grabber.lucked.me` |
 | `cloud` (Nextcloud AIO) | [projects/cloud.md](projects/cloud.md) (step 19) | `https://cloud.lucked.me` |
 | `cms` | [projects/cms.md](projects/cms.md) (step 22) | `https://cms.lucked.me`, `/admin`, `/api` |
+| `tile-expert-test` | [projects/tile-expert-test.md](projects/tile-expert-test.md) (step 23) | `https://tile-expert-test.lucked.me` |
 
 The **step numbers are kept** across all files, so references such as "step 18.3" or "step 6" point to the same step wherever they appear. Later you can add more projects with their own domains to the same server (step 20).
 
@@ -54,8 +55,11 @@ With the tunnel, Cloudflare terminates HTTPS and redirects `http://` to `https:/
     │   ├── docker-compose.yaml     # copy of docs/cloud/docker-compose.yaml
     │   ├── .env                    # NEXTCLOUD_DATADIR, APACHE_IP_BINDING, TAILSCALE_IP
     │   └── ncdata/                 # Nextcloud user data
-    └── cms/                        # git clone of vtsot/cms-admin (step 22); client app in cms/client (22.11)
-        └── .env.prod.local         # secrets (HTTP_PORT=172.17.0.1:8081)
+    ├── cms/                        # git clone of vtsot/cms-admin (step 22); client app in cms/client (22.11)
+    │   └── .env.prod.local         # secrets (HTTP_PORT=172.17.0.1:8081)
+    └── tile-expert-test/           # git clone of LuckedMe/tile-expert-test (step 23)
+        ├── docker-compose.override.yaml  # copy of docs/tile-expert-test/docker-compose.override.yaml (Traefik labels, no ports)
+        └── .env.local              # secrets (APP_SECRET), chmod 600
     # later: site1.com/  site2.com/  sub-1.site1.com/ ...
 ```
 

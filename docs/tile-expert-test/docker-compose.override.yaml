@@ -1,0 +1,40 @@
+# Production override for the tile-expert-test project (docs/projects/tile-expert-test.md, step 23.4).
+# Location on the server: /home/dad/workspace/www/tile-expert-test/docker-compose.override.yaml
+# (the file is git-ignored in the project; docker compose merges it into docker-compose.yaml automatically,
+# so every command is a plain `docker compose ...` in the project folder).
+#
+# The repo has only a development compose file. This override turns it into a server stack:
+#   - nothing is published on the host (the dev file publishes nginx, MySQL, Manticore and Adminer on 0.0.0.0,
+#     and Docker published ports bypass ufw): `ports: !reset []`
+#   - nginx joins the shared `reverse-proxy` network and gets Traefik labels (same pattern as step 20)
+#   - no redirectscheme middleware, no certresolver: Cloudflare does http -> https (it would loop behind the tunnel)
+#   - Adminer is not started by default (profile `debug`)
+# `!reset` needs Docker Compose 2.24.4 or newer (`docker compose version`).
+services:
+    nginx:
+        ports: !reset []
+        networks:
+            - reverse-proxy
+            - tile-expert-test-app
+        labels:
+            - traefik.enable=true
+            - traefik.docker.network=reverse-proxy
+            - traefik.http.services.tile-expert-test.loadbalancer.server.port=80
+            - traefik.http.routers.tile-expert-test.rule=Host(`tile-expert-test.lucked.me`)
+            - traefik.http.routers.tile-expert-test.entrypoints=web
+
+    mysql:
+        ports: !reset []
+
+    manticore:
+        ports: !reset []
+
+    adminer:
+        ports: !reset []
+        profiles:
+            - debug
+
+networks:
+    reverse-proxy:
+        name: reverse-proxy
+        external: true
