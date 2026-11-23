@@ -25,9 +25,12 @@ Structure on the server (user `dad`):
     ├── cms/                   # CMS admin (git clone of vtsot/cms-admin), step 22
     │   ├── docker-compose.traefik.yaml   # server-only: Traefik labels, no published ports
     │   └── .env.prod.local
-    └── tile-expert-test/      # git clone of LuckedMe/tile-expert-test, step 23
-        ├── docker-compose.override.yaml   # server-only: Traefik labels, no published ports
-        └── .env.local         # APP_SECRET, DEFAULT_URI, CORS (chmod 600)
+    ├── tile-expert-test/      # git clone of LuckedMe/tile-expert-test, step 23
+    │   ├── docker-compose.prod.yaml   # from the repo: Traefik labels on nginx, no published ports
+    │   └── .env.prod.local    # secrets (chmod 600), from .env.prod.local.dist
+    └── cv/                    # static files only (no git), step 24
+        ├── docker-compose.yaml        # copy of docs/cv/docker-compose.yaml: nginx + Traefik labels
+        └── public/            # cv.vitalii.sotnykov_ENG.pdf, index.html ...
                                # (future: site1.com/, sub-1.site1.com/ ...)
 ```
 
@@ -39,6 +42,7 @@ Structure on the server (user `dad`):
 - project: `cloud` (Nextcloud All-in-One); server folder: `/home/dad/workspace/www/cloud`; domain `cloud.lucked.me` (same zone, same tunnel, a second public hostname; change it if another name is wanted). The AIO admin interface is **not** public: only over Tailscale, `https://100.91.57.78:8080`.
 - project: `cms` (CMS admin, repo `vtsot/cms-admin`); server folder: `/home/dad/workspace/www/cms`; one domain `cms.lucked.me` (main), `cms.lucked.me/admin` (admin), `cms.lucked.me/api` (API), same zone and tunnel (step 22)
 - project: `tile-expert-test` (Symfony JSON API test task, repo `git@github.com:LuckedMe/tile-expert-test.git`); server folder: `/home/dad/workspace/www/tile-expert-test`; main (only) domain `tile-expert-test.lucked.me`, same zone and tunnel (step 23)
+- project: `cv` (static files, e.g. the CV pdf; no application, no database, no GitHub repo); server folder: `/home/dad/workspace/www/cv`; main (only) domain `cv.lucked.me`, same zone and tunnel (step 24)
 - the `cloud` project already runs by the Tailscale IP from that same folder, so step 18 only switches it to the domain (no folder move, the database and volumes are untouched)
 
 ```
@@ -59,7 +63,8 @@ Consequences:
    - `docs/projects/vacancy-grabber.md`: steps 11–17, the project part of step 18 (18.4–18.6, 18.8, 18.9), its cheat sheet and troubleshooting.
    - `docs/projects/cloud.md`: step 19 (Nextcloud AIO), its cheat sheet and troubleshooting.
    - `docs/projects/cms.md`: step 22 (cms).
-   - `docs/projects/tile-expert-test.md`: step 23 (tile-expert-test), with the templates `docs/tile-expert-test/docker-compose.override.yaml` and `docs/tile-expert-test/.env.local.dist`.
+   - `docs/projects/cv.md`: step 24 (cv, static files), with the template `docs/cv/docker-compose.yaml`.
+   - `docs/projects/tile-expert-test.md`: step 23 (tile-expert-test). The project repo carries its own prod stack and guide (`docs/deploy.md`, `bin/deploy.sh`), so no templates live in this repo.
 2. **`docs/infrastructure/docker-compose.yaml`**: Traefik template, copied to `/home/dad/workspace/infrastructure/` on the server.
 3. **`docker-compose.prod.yaml`**: remove `VIRTUAL_*`/`LETSENCRYPT_HOST`, add Traefik labels to `nginx`.
 4. **`.env.prod.dist`**: `APP_DOMAIN` = IP by default, `DEFAULT_URI=http://<IP>/`, comments about switching to a domain.
@@ -415,17 +420,24 @@ With the Cloudflare Tunnel (step 18) the "Stage 2" labels stay commented out: TL
 
 23. **Project `tile-expert-test` in `/home/dad/workspace/www/tile-expert-test`**, main domain `tile-expert-test.lucked.me` (public JSON API, Swagger UI at `/api/doc`). Full commands: `docs/projects/tile-expert-test.md`, step 23.
     - Same Traefik + Cloudflare Tunnel; **one** tunnel route (Subdomain `tile-expert-test`, `HTTP`, `traefik:80`, Path empty); one level deep, so the free Universal SSL certificate covers it.
-    - Stack (checked in the repo): PHP 8.4 / Symfony 8.1, MySQL 8, Manticore Search, nginx + php-fpm; Messenger is `sync://` (no worker). The repo has **only a dev compose file** (`docker-compose.yaml`: code bind-mounted, `ports:` for nginx 8080, MySQL 3306, Manticore 9308, Adminer 8081 on `0.0.0.0`, dev DB password) and no prod Dockerfile; `COMPOSE_PROJECT_NAME=tile-expert-test` is in `.env`, `APP_ENV=prod` is the default.
-    - **No repo change.** A server-only `docker-compose.override.yaml` (git-ignored by the project, merged automatically, template in `docs/tile-expert-test/`) does: `ports: !reset []` on every service (published ports bypass ufw), nginx joins the external `reverse-proxy` network with Traefik labels (step 20 pattern: router/service `tile-expert-test`, rule ``Host(`tile-expert-test.lucked.me`)``, entrypoint `web`, no redirect, no certresolver), Adminer behind profile `debug`. No ufw rule and no `dynamic/*.yaml` file are needed (labels, not the file provider). Needs Compose >= 2.24.4. Checked locally with `docker compose config`.
-    - Settings go to a git-ignored `.env.local` (template `docs/tile-expert-test/.env.local.dist`): `APP_SECRET` (`openssl rand -hex 32`), `DEFAULT_URI=https://tile-expert-test.lucked.me/`, `CORS_ALLOW_ORIGIN`. DB credentials stay the dev ones: MySQL is only in the internal network.
-    - 23.0 requirements (Compose version, uid 1000, swap); 23.1 tunnel route; 23.2 clone (own Deploy key + `github-tile-expert-test` ssh alias); 23.3 `.env.local`; 23.4 copy the override, `up -d --build`; 23.5 `composer install --no-dev` inside php-fpm, cache warmup, migrations, `app:order:reindex` (not `make setup`: it installs dev deps and the test DB); 23.6 verify (`/api/doc`, `/api/orders`; note `/api/products` may get 403 from tile.expert's Cloudflare); 23.7 update; 23.8 backups (`backup-tile-expert-test.sh`, cron 03:20, MySQL only, the index is rebuilt); 23.9 rollback + troubleshooting.
-    - Assumptions to confirm: that a public API without auth is intended; that the dev DB password is acceptable because MySQL is not published.
+    - Stack (checked in the repo): PHP 8.4 / Symfony 8.1, MySQL 8, Manticore Search, nginx + php-fpm; Messenger is `sync://` (no worker).
+    - The repo has its **own production stack** (commit "prepare deployment"): root multi-stage `Dockerfile` (targets `app`, `nginx`), `docker-compose.prod.yaml` (project name `tile-expert-test-prod`; services `php-fpm`, `nginx`, `mysql`, `manticore`; **no published ports**; nginx joins the external `reverse-proxy` network with Traefik labels, router/service `tile-expert-test`, rule ``Host(`${APP_DOMAIN}`)``, entrypoint `web`, no redirect, no certresolver), `.env.prod.local.dist`, `bin/deploy.sh [--remote] [--reindex] [--ref]`, and its own `docs/deploy.md` + `docs/main-dockerfile-fix.md` (the project repo wins if the guides differ). The earlier idea of a server-only `docker-compose.override.yaml` on the dev compose file was dropped. No ufw rule and no `dynamic/*.yaml` file are needed.
+    - Settings go to a git-ignored `.env.prod.local`: generated `APP_SECRET`, `MYSQL_PASSWORD`, `MYSQL_ROOT_PASSWORD` (`openssl rand -hex`), `APP_DOMAIN=tile-expert-test.lucked.me`, `DEFAULT_URI=https://tile-expert-test.lucked.me/`, `CORS_ALLOW_ORIGIN`.
+    - 23.0 requirements (swap, disk); 23.1 tunnel route; 23.2 clone (own Deploy key + `github-tile-expert-test` ssh alias); 23.3 `.env.prod.local`; 23.4 first start (`up -d --build`, migrations at php-fpm start, `app:order:reindex` when orders exist); 23.5 verify (`/api/doc`, `/api/orders`; `/api/products` may get 403 from tile.expert's Cloudflare); 23.6 update (`bin/deploy.sh`, `--remote`, `--ref` rollback); 23.7 backups (`backup-tile-expert-test.sh`, cron 03:20, MySQL only, the index is rebuilt); 23.8 rollback + troubleshooting.
+    - Assumptions to confirm: that a public API without auth is intended.
+
+24. **Project `cv` in `/home/dad/workspace/www/cv`**, main domain `cv.lucked.me`: only static files (the CV pdf), only a `public` folder is needed. Full commands: `docs/projects/cv.md`, step 24.
+    - Same Traefik + Cloudflare Tunnel; **one** tunnel route (Subdomain `cv`, `HTTP`, `traefik:80`, Path empty); one level deep, so the free Universal SSL certificate covers it.
+    - One `nginx:stable-alpine` container from `docs/cv/docker-compose.yaml` (`name: cv`, service `web`): `./public` mounted read-only at `/usr/share/nginx/html`, joins the external `reverse-proxy` network, Traefik labels (step 20 pattern: router/service `cv`, rule ``Host(`cv.lucked.me`)``, entrypoint `web`, no redirect, no certresolver). No published ports, no ufw rule, no `dynamic/*.yaml`, no git, no secrets, no build; the folder is live-mounted, so uploading a file needs no restart.
+    - 24.0 requirements; 24.1 tunnel route; 24.2 create `www/cv/public`, copy the compose file, `up -d`; 24.3 upload files (`scp`/`rsync`, chmod 755/644, optional `index.html` because `/` gives 403 without it); 24.4 verify (`/cv.vitalii.sotnykov_ENG.pdf` 200 `application/pdf`); 24.5 update (+ purge Cloudflare cache for a replaced file); 24.6 backups (keep originals locally); 24.7 rollback + troubleshooting.
+    - Assumptions to confirm: file name `cv.vitalii.sotnykov_ENG.pdf` (local copy `/home/vitaly/Documents/resume/cv.vitalii.sotnykov_ENG.pdf`); whether a landing `index.html` is wanted instead of a direct file link.
 
 ## Files touched
 - New: `docs/vps-setup.md`, `docs/infrastructure/docker-compose.yaml`, `docs/infrastructure/.env.dist`, `plans/vps-setup.md`
 - New for `cloud` (step 19): `docs/cloud/docker-compose.yaml`, `docs/cloud/.env.dist`, `docs/infrastructure/dynamic/cloud.yaml` (Traefik file-provider route); `docs/infrastructure/docker-compose.yaml` also gets the file provider, `extra_hosts`, `readTimeout=0` and the `./dynamic` volume
 - For `cms` (step 22): `docs/projects/cms.md` and the template `docs/cms/docker-compose.traefik.yaml` (replaces `docs/infrastructure/dynamic/cms.yaml`, deleted); the backup script lives on the server and is shown inline
-- For `tile-expert-test` (step 23): `docs/projects/tile-expert-test.md`, `docs/tile-expert-test/docker-compose.override.yaml`, `docs/tile-expert-test/.env.local.dist`; `docs/vps-setup.md` (project table and directory tree)
+- For `tile-expert-test` (step 23): `docs/projects/tile-expert-test.md`; `docs/vps-setup.md` (project table and directory tree); the stack itself lives in the project repo (`docker-compose.prod.yaml`, `Dockerfile`, `bin/deploy.sh`, `docs/deploy.md`)
+- For `cv` (step 24): `docs/projects/cv.md` and the template `docs/cv/docker-compose.yaml`; `docs/vps-setup.md` (project table, directory tree, ufw note)
 - Edited: `docker-compose.prod.yaml` (Traefik labels instead of `VIRTUAL_*`), `.env.prod.dist`, `readme.md`
 - Follow-ups for the domain/tunnel (step 18): `docs/infrastructure/docker-compose.yaml` (`cloudflared` service + `forwardedheaders.trustedips`), `docs/infrastructure/.env.dist` (`TUNNEL_TOKEN=`), `.env.prod.dist` (example domain `vacancy-grabber.lucked.me`), `docs/vps-setup.md` (same step 18)
 

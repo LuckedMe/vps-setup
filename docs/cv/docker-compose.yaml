@@ -1,0 +1,25 @@
+# Static site for the cv project (docs/projects/cv.md, step 24).
+# Location on the server: /home/dad/workspace/www/cv/docker-compose.yaml
+# Only the ./public folder next to this file is served (read-only): put the CV pdf and other static files there.
+# nginx joins the shared `reverse-proxy` network and gets Traefik labels (step 20 pattern):
+# no published ports, no redirectscheme middleware, no certresolver (Cloudflare does TLS and http -> https).
+name: cv
+
+services:
+    web:
+        image: nginx:stable-alpine
+        restart: unless-stopped
+        volumes:
+            - ./public:/usr/share/nginx/html:ro
+        networks:
+            - reverse-proxy
+        labels:
+            - traefik.enable=true
+            - traefik.docker.network=reverse-proxy
+            - traefik.http.services.cv.loadbalancer.server.port=80
+            - traefik.http.routers.cv.rule=Host(`cv.lucked.me`)
+            - traefik.http.routers.cv.entrypoints=web
+
+networks:
+    reverse-proxy:
+        external: true

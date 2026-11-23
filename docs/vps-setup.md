@@ -8,6 +8,7 @@ A step-by-step guide for the **common part** of the server: clean VPS → Docker
 | `cloud` (Nextcloud AIO) | [projects/cloud.md](projects/cloud.md) (step 19) | `https://cloud.lucked.me` |
 | `cms` | [projects/cms.md](projects/cms.md) (step 22) | `https://cms.lucked.me`, `/admin`, `/api` |
 | `tile-expert-test` | [projects/tile-expert-test.md](projects/tile-expert-test.md) (step 23) | `https://tile-expert-test.lucked.me` |
+| `cv` (static files) | [projects/cv.md](projects/cv.md) (step 24) | `https://cv.lucked.me` |
 
 The **step numbers are kept** across all files, so references such as "step 18.3" or "step 6" point to the same step wherever they appear. Later you can add more projects with their own domains to the same server (step 20).
 
@@ -57,8 +58,11 @@ With the tunnel, Cloudflare terminates HTTPS and redirects `http://` to `https:/
     ├── cms/                        # git clone of vtsot/cms-admin (step 22); client app in cms/client (22.11)
     │   ├── docker-compose.traefik.yaml  # copy of docs/cms/docker-compose.traefik.yaml (Traefik labels, no ports)
     │   └── .env.prod.local         # secrets
-    └── tile-expert-test/           # git clone of LuckedMe/tile-expert-test (step 23)
-        └── .env.prod.local         # secrets (APP_SECRET, MYSQL_*), chmod 600; the stack is docker-compose.prod.yaml from the repo (Traefik labels, no ports)
+    ├── tile-expert-test/           # git clone of LuckedMe/tile-expert-test (step 23)
+    │   └── .env.prod.local         # secrets (APP_SECRET, MYSQL_*), chmod 600; the stack is docker-compose.prod.yaml from the repo (Traefik labels, no ports)
+    └── cv/                         # static files only, no git (step 24)
+        ├── docker-compose.yaml     # copy of docs/cv/docker-compose.yaml (nginx + Traefik labels)
+        └── public/                 # cv.vitalii.sotnykov_ENG.pdf, index.html ...
     # later: site1.com/  site2.com/  sub-1.site1.com/ ...
 ```
 
@@ -143,7 +147,7 @@ sudo ufw status verbose
 
 > The VPS has no public IP and the Cloudflare Tunnel (step 18) is outbound only, so ports 80/443 are not needed by the tunnel and are not reachable from the internet. They stay open as above (tailnet access, or a future public IP).
 
-> For the `cloud` project (step 19) one more rule is added: `sudo ufw allow from 172.16.0.0/12 to any port 11000 proto tcp` (Traefik reaches Nextcloud's Apache through the docker0 gateway). Projects that use Traefik labels (`cms`, `tile-expert-test`) need no ufw rule. Never open 8080 or 11000 to the world.
+> For the `cloud` project (step 19) one more rule is added: `sudo ufw allow from 172.16.0.0/12 to any port 11000 proto tcp` (Traefik reaches Nextcloud's Apache through the docker0 gateway). Projects that use Traefik labels (`cms`, `tile-expert-test`, `cv`) need no ufw rule. Never open 8080 or 11000 to the world.
 
 > ⚠️ Docker bypasses ufw rules for published ports (`ports:` in compose). That is why **only Traefik** has `ports:`. Projects use `expose:` and the `reverse-proxy` network. MySQL is not published to the outside.
 
