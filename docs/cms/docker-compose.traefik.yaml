@@ -1,0 +1,29 @@
+# Server-side Traefik override for the cms project (docs/projects/cms.md, step 22.4).
+# Location on the server: /home/dad/workspace/www/cms/docker-compose.traefik.yaml
+# It is NOT in the cms-admin repo: the repo's docker-compose.prod.yaml stays usable on a standalone server.
+# Used together with the prod file:
+#   docker compose -f docker-compose.prod.yaml -f docker-compose.traefik.yaml --env-file .env.prod.local ...
+#
+# - the published port of nginx (${HTTP_PORT:-80}:80) is removed: nothing is published on the host
+# - nginx joins the shared `reverse-proxy` network and gets Traefik labels (step 20 pattern)
+# - routed: the admin, the API, their static files and the exact "/" (the app redirects it to /admin);
+#   when the client site takes "/" (cms.md 22.11), remove Path(`/`) from the rule
+# - no redirectscheme middleware, no certresolver: Cloudflare does http -> https (it would loop behind the tunnel)
+# `!reset` needs Docker Compose 2.24.4 or newer (`docker compose version`).
+services:
+    nginx:
+        ports: !reset []
+        networks:
+            - reverse-proxy
+            - app
+        labels:
+            - traefik.enable=true
+            - traefik.docker.network=reverse-proxy
+            - traefik.http.services.cms.loadbalancer.server.port=80
+            - traefik.http.routers.cms.rule=Host(`cms.lucked.me`) && (Path(`/`) || PathPrefix(`/admin`) || PathPrefix(`/api`) || PathPrefix(`/assets`) || PathPrefix(`/bundles`) || PathPrefix(`/uploaded`))
+            - traefik.http.routers.cms.entrypoints=web
+
+networks:
+    reverse-proxy:
+        name: reverse-proxy
+        external: true

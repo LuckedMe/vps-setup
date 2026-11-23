@@ -46,7 +46,6 @@ With the tunnel, Cloudflare terminates HTTPS and redirects `http://` to `https:/
 │   ├── docker-compose.yaml         # copy of vps-setup repo: docs/infrastructure/docker-compose.yaml
 │   ├── .env                        # ACME_EMAIL, TUNNEL_TOKEN
 │   ├── dynamic/cloud.yaml          # Traefik file-provider route for Nextcloud (step 19)
-│   ├── dynamic/cms.yaml            # Traefik file-provider route for cms (step 22.4)
 │   └── letsencrypt/
 │       └── dad.json                # certificates (chmod 600)
 └── www/
@@ -56,10 +55,10 @@ With the tunnel, Cloudflare terminates HTTPS and redirects `http://` to `https:/
     │   ├── .env                    # NEXTCLOUD_DATADIR, APACHE_IP_BINDING, TAILSCALE_IP
     │   └── ncdata/                 # Nextcloud user data
     ├── cms/                        # git clone of vtsot/cms-admin (step 22); client app in cms/client (22.11)
-    │   └── .env.prod.local         # secrets (HTTP_PORT=172.17.0.1:8081)
+    │   ├── docker-compose.traefik.yaml  # copy of docs/cms/docker-compose.traefik.yaml (Traefik labels, no ports)
+    │   └── .env.prod.local         # secrets
     └── tile-expert-test/           # git clone of LuckedMe/tile-expert-test (step 23)
-        ├── docker-compose.override.yaml  # copy of docs/tile-expert-test/docker-compose.override.yaml (Traefik labels, no ports)
-        └── .env.local              # secrets (APP_SECRET), chmod 600
+        └── .env.prod.local         # secrets (APP_SECRET, MYSQL_*), chmod 600; the stack is docker-compose.prod.yaml from the repo (Traefik labels, no ports)
     # later: site1.com/  site2.com/  sub-1.site1.com/ ...
 ```
 
@@ -144,7 +143,7 @@ sudo ufw status verbose
 
 > The VPS has no public IP and the Cloudflare Tunnel (step 18) is outbound only, so ports 80/443 are not needed by the tunnel and are not reachable from the internet. They stay open as above (tailnet access, or a future public IP).
 
-> For the `cloud` project (step 19) one more rule is added: `sudo ufw allow from 172.16.0.0/12 to any port 11000 proto tcp` (Traefik reaches Nextcloud's Apache through the docker0 gateway). For the `cms` project (step 22.4) likewise: `sudo ufw allow from 172.16.0.0/12 to any port 8081 proto tcp`. Never open 8080, 8081 or 11000 to the world.
+> For the `cloud` project (step 19) one more rule is added: `sudo ufw allow from 172.16.0.0/12 to any port 11000 proto tcp` (Traefik reaches Nextcloud's Apache through the docker0 gateway). Projects that use Traefik labels (`cms`, `tile-expert-test`) need no ufw rule. Never open 8080 or 11000 to the world.
 
 > ⚠️ Docker bypasses ufw rules for published ports (`ports:` in compose). That is why **only Traefik** has `ports:`. Projects use `expose:` and the `reverse-proxy` network. MySQL is not published to the outside.
 

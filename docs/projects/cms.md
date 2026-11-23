@@ -24,7 +24,7 @@ Browser ──https──► Cloudflare ──tunnel──► cloudflared ──
                      nginx ─► php-fpm (+ worker) ─► mysql   client app (22.11)
 ```
 
-How it is wired: the project's `docker-compose.prod.yaml` was written for a standalone server and publishes its nginx as `${HTTP_PORT}:80`, with no Traefik labels. We do **not** edit the repo file and need no compose override: `HTTP_PORT=172.17.0.1:8081` publishes nginx on the docker0 gateway only (not on `0.0.0.0`, so it is not exposed and does not collide with Traefik), and a Traefik file-provider route (`infrastructure/dynamic/cms.yaml`) forwards the domain to it, exactly as for the `cloud` project.
+How it is wired: the project's `docker-compose.prod.yaml` was written for a standalone server and publishes its nginx as `${HTTP_PORT}:80`, with no Traefik labels. We do **not** edit the repo file. A server-only `docker-compose.traefik.yaml` (template: [`docs/cms/docker-compose.traefik.yaml`](../cms/docker-compose.traefik.yaml), kept next to the project, not in the repo) is added as a second `-f` file: it removes the published port (`ports: !reset []`), puts `nginx` into the shared `reverse-proxy` network and gives it Traefik labels (the step 20 pattern). Traefik reads the labels from the Docker socket, so no file-provider route, no ufw rule and no published port are needed. (`cloud` is the only project that needs a file-provider route: AIO creates its containers itself, so labels cannot be added.)
 
 Why one domain works without extra code: the Symfony app already serves everything under `/admin` (Sonata, elFinder) and `/api` (site API, JWT) itself, and its static files live under `/assets`, `/bundles` and `/uploaded`. Traefik only has to decide which container gets which path. A single name `cms.lucked.me` is one level deep, so the free Cloudflare Universal SSL certificate covers it (no paid certificate needed).
 
@@ -33,7 +33,8 @@ Why one domain works without extra code: the Symfony app already serves everythi
 - Steps 1–10 are done (Docker, `reverse-proxy` network, Traefik, `cloudflared` running) and steps 18.1/18.2 (tunnel and HTTPS-only settings) are in place.
 - Step 11 (deploy key) is done. GitHub accepts a given public key as a Deploy key on **one** repository only, so the server needs its own key for `vtsot/cms-admin` (see 22.2).
 - RAM: the image build runs webpack, so swap (step 6) must exist. Free disk: `df -h /home`.
-- Traefik has the file provider and `extra_hosts: host.docker.internal` (step 19.1; shared with `cloud`).
+- Docker Compose 2.24.4 or newer (`docker compose version`), needed for `!reset`. The Docker from step 8 is new enough.
+- Traefik uses the Docker provider (`exposedByDefault=false`, `network=reverse-proxy`); this is already in the Traefik template.
 
 ### 22.1 Cloudflare: public hostname (browser)
 
@@ -43,7 +44,7 @@ Zero Trust → Networks → Tunnels → `vps` → **Published application routes
 |---|---|---|---|---|
 | `cms` | `lucked.me` | empty | `HTTP` | `traefik:80` |
 
-Leave **Path** empty: one route sends the whole domain to Traefik, and Traefik splits `/admin`, `/api` and `/` itself by the file-provider routes (22.4). Cloudflare creates the proxied CNAME record `cms` itself (delete an existing record named `cms` first). The HTTPS-only settings from 18.2 apply to the whole zone.
+Leave **Path** empty: one route sends the whole domain to Traefik, and Traefik splits `/admin`, `/api` and `/` itself by the router rule from the labels (22.4). Cloudflare creates the proxied CNAME record `cms` itself (delete an existing record named `cms` first). The HTTPS-only settings from 18.2 apply to the whole zone.
 
 ### 22.2 Clone the repository (server)
 
@@ -89,7 +90,7 @@ nano .env.prod.local
 | Variable | Value |
 |---|---|
 | `APP_IMAGE` / `APP_TAG` | leave `cms-admin` / `latest` |
-| `HTTP_PORT` | `172.17.0.1:8081`: nginx is published on the docker0 gateway only; Traefik reaches it there (22.4). Do not leave `80` (it collides with Traefik and bypasses ufw) |
+| `HTTP_PORT` | leave the dist value: the published port is removed by `docker-compose.traefik.yaml` (22.4), so it is ignored |
 | `RUN_MIGRATIONS` | `1`: migrations run when `php-fpm` starts |
 | `MYSQL_DATABASE` / `MYSQL_USER` | `cms_admin` / `cms_admin` |
 | `MYSQL_PASSWORD` / `MYSQL_ROOT_PASSWORD` | generated (`openssl rand -hex 24`: no characters that break the `DATABASE_URL`) |
@@ -101,79 +102,131 @@ nano .env.prod.local
 | `MAILER_DSN` | `null://null` until a mail server is set up |
 | `MESSENGER_TRANSPORT_DSN` | `doctrine://default?auto_setup=0` |
 
-### 22.4 Traefik route (server)
+### 22.4 Traefik labels (server)
 
-No override file is needed. The stack's nginx publishes its port on the docker0 gateway (`HTTP_PORT=172.17.0.1:8081`, set in 22.3), and Traefik reaches it through the file provider, the same way as for `cloud` (step 19.1; the file provider, `extra_hosts` and the `./dynamic` volume are already in the Traefik compose file).
-
-Check the docker0 address (use it in `HTTP_PORT` if it differs) and open the port for the docker networks only:
-
-```bash
-ip -4 addr show docker0 | grep inet                        # 172.17.0.1/16
-sudo ufw allow from 172.16.0.0/12 to any port 8081 proto tcp
-```
-
-Create the route from the repo template (`docs/infrastructure/dynamic/cms.yaml`):
+No route file and no ufw rule are needed. The override puts nginx into the `reverse-proxy` network with Traefik labels, and removes its published port. Copy it next to the project:
 
 ```bash
 # on your machine
-scp docs/infrastructure/dynamic/cms.yaml dad@100.91.57.78:/home/dad/workspace/infrastructure/dynamic/cms.yaml
-# on the server: Traefik watches the folder, no restart needed
-cd /home/dad/workspace/infrastructure && docker compose logs --tail 20 traefik   # no errors
+scp /home/vitaly/workspace/www/nastiksot-vps/vps-setup/docs/cms/docker-compose.traefik.yaml dad@100.91.57.78:/home/dad/workspace/www/cms/docker-compose.traefik.yaml
 ```
 
 ```yaml
-http:
-  routers:
-    cms:
-      rule: Host(`cms.lucked.me`) && (Path(`/`) || PathPrefix(`/admin`) || PathPrefix(`/api`) || PathPrefix(`/assets`) || PathPrefix(`/bundles`) || PathPrefix(`/uploaded`))
-      entryPoints: [web]
-      service: cms
-  services:
-    cms:
-      loadBalancer:
-        servers:
-          - url: "http://host.docker.internal:8081"
+services:
+    nginx:
+        ports: !reset []
+        networks:
+            - reverse-proxy
+            - app
+        labels:
+            - traefik.enable=true
+            - traefik.docker.network=reverse-proxy
+            - traefik.http.services.cms.loadbalancer.server.port=80
+            - traefik.http.routers.cms.rule=Host(`cms.lucked.me`) && (Path(`/`) || PathPrefix(`/admin`) || PathPrefix(`/api`) || PathPrefix(`/assets`) || PathPrefix(`/bundles`) || PathPrefix(`/uploaded`))
+            - traefik.http.routers.cms.entrypoints=web
 ```
 
 Routed: the admin, the API, their static files, and the exact path `/`. The app itself answers `/` with a redirect to `/admin` (`DefaultController`, route `web.homepage`), so no Traefik middleware is needed, and the redirect URL keeps the `https` scheme. There is no `redirectscheme` middleware and no certresolver: TLS and the redirect to https are done by Cloudflare. Router and service names must be unique among projects (step 20). When the client site takes `/` (22.11), remove ``Path(`/`) ||`` from the rule.
 
-Check the stack file and the published port (run it in the project folder; every `docker compose` command for this project needs `-f docker-compose.prod.yaml --env-file .env.prod.local`: `-f` skips the dev compose files, `--env-file` feeds the `${...}` values, and the compose project name `cms-admin-prod` is fixed by the repo):
+Every `docker compose` command for this project needs `-f docker-compose.prod.yaml -f docker-compose.traefik.yaml --env-file .env.prod.local` (run in the project folder): the `-f` files skip the dev compose files, add the Traefik override, `--env-file` feeds the `${...}` values, and the compose project name `cms-admin-prod` is fixed by the repo. Check the result:
 
 ```bash
 cd /home/dad/workspace/www/cms
-docker compose -f docker-compose.prod.yaml --env-file .env.prod.local config > /dev/null && echo OK
-docker compose -f docker-compose.prod.yaml --env-file .env.prod.local config | grep -A8 '^  nginx:' | grep -A2 ports      # published: 172.17.0.1:8081 -> 80, not 0.0.0.0
+docker compose -f docker-compose.prod.yaml -f docker-compose.traefik.yaml --env-file .env.prod.local config > /dev/null && echo OK
+docker compose -f docker-compose.prod.yaml -f docker-compose.traefik.yaml --env-file .env.prod.local config | grep -c published      # 0: no published ports
+docker compose -f docker-compose.prod.yaml -f docker-compose.traefik.yaml --env-file .env.prod.local config | grep traefik          # the labels
+```
+
+#### Migrating a server that already runs the old setup (published port 8081 + `dynamic/cms.yaml`)
+
+What changes: only the `nginx` container is recreated (about 5–10 seconds of downtime). The database, the uploaded files and the other containers, volumes and secrets are not touched. No `git pull` and no rebuild are needed.
+
+**Why the order matters.** After the change nginx no longer listens on `172.17.0.1:8081`. If `dynamic/cms.yaml` stays, Traefik has two routers with the same rule (`cms@file` and `cms@docker`) and may send requests to the dead port (`502`). So the old route file is removed right after the new nginx is up, in the same step.
+
+1. **On your machine**: copy the override to the server.
+
+   ```bash
+   scp /home/vitaly/workspace/www/nastiksot-vps/vps-setup/docs/cms/docker-compose.traefik.yaml dad@100.91.57.78:/home/dad/workspace/www/cms/docker-compose.traefik.yaml
+   ```
+
+2. **On the server** (`ssh dad@100.91.57.78`): check the new config before touching anything.
+
+   ```bash
+   cd /home/dad/workspace/www/cms
+   docker compose version                                   # 2.24.4 or newer
+   docker compose -f docker-compose.prod.yaml -f docker-compose.traefik.yaml --env-file .env.prod.local config > /dev/null && echo OK
+   docker compose -f docker-compose.prod.yaml -f docker-compose.traefik.yaml --env-file .env.prod.local config | grep -c published   # 0
+   ```
+
+   If this fails with a `!reset` error, update Docker first (step 8).
+
+3. **On the server**: recreate nginx with the labels and remove the old route in one go.
+
+   ```bash
+   cd /home/dad/workspace/www/cms
+   docker compose -f docker-compose.prod.yaml -f docker-compose.traefik.yaml --env-file .env.prod.local up -d \
+     && rm /home/dad/workspace/infrastructure/dynamic/cms.yaml
+   docker compose -f docker-compose.prod.yaml -f docker-compose.traefik.yaml --env-file .env.prod.local ps    # nginx recreated and Up; php-fpm, mysql not recreated
+   docker ps --filter name=cms-admin-prod-nginx --format '{{.Names}}  {{.Ports}}'                              # no host port mapping, only "80/tcp"
+   cd /home/dad/workspace/infrastructure && docker compose logs --tail 20 traefik                              # no errors
+   ```
+
+   Traefik watches `dynamic/`, so no restart is needed.
+
+4. **Verify** with the checks from 22.7 (the Host-header requests on the server, then `https://cms.lucked.me/admin/login` from outside, and the login in the browser).
+
+5. **Clean up** the old firewall rule and the old setting:
+
+   ```bash
+   sudo ufw status numbered | grep 8081                                       # the rule "172.16.0.0/12 ... 8081/tcp"
+   sudo ufw delete allow from 172.16.0.0/12 to any port 8081 proto tcp
+   nano /home/dad/workspace/www/cms/.env.prod.local                           # HTTP_PORT: set back to 80 (it is ignored now); optional
+   ```
+
+6. **From now on** every `docker compose` command for this project includes `-f docker-compose.traefik.yaml` (the commands in this guide already do). Without it compose publishes port 80 again (`Bind for 0.0.0.0:80 failed`).
+
+**Rollback** to the old setup, if something is wrong:
+
+```bash
+# on your machine: recreate the old route file from git history and copy it to the server
+git show 5586e74:docs/infrastructure/dynamic/cms.yaml > /tmp/cms.yaml
+scp /tmp/cms.yaml dad@100.91.57.78:/home/dad/workspace/infrastructure/dynamic/cms.yaml
+
+# on the server
+cd /home/dad/workspace/www/cms
+grep '^HTTP_PORT' .env.prod.local                                            # must be 172.17.0.1:8081 (set it back if you changed it in step 5)
+sudo ufw allow from 172.16.0.0/12 to any port 8081 proto tcp
+docker compose -f docker-compose.prod.yaml --env-file .env.prod.local up -d   # without the override: nginx is published on 172.17.0.1:8081 again
 ```
 
 ### 22.5 First start
 
 ```bash
 cd /home/dad/workspace/www/cms
-grep '^HTTP_PORT' .env.prod.local     # must be HTTP_PORT=172.17.0.1:8081, NOT 80 (the dist file has 80 and Traefik already uses it)
-docker compose -f docker-compose.prod.yaml --env-file .env.prod.local up -d --build          # first build takes 5–15 minutes (composer + webpack inside the Dockerfile)
-docker compose -f docker-compose.prod.yaml --env-file .env.prod.local ps                     # php-fpm, nginx Up; mysql healthy
-docker compose -f docker-compose.prod.yaml --env-file .env.prod.local logs -f php-fpm        # migrations ran at start; Ctrl+C
+docker compose -f docker-compose.prod.yaml -f docker-compose.traefik.yaml --env-file .env.prod.local up -d --build          # first build takes 5–15 minutes (composer + webpack inside the Dockerfile)
+docker compose -f docker-compose.prod.yaml -f docker-compose.traefik.yaml --env-file .env.prod.local ps                     # php-fpm, nginx Up; mysql healthy
+docker compose -f docker-compose.prod.yaml -f docker-compose.traefik.yaml --env-file .env.prod.local logs -f php-fpm        # migrations ran at start; Ctrl+C
 ```
 
-The frontend is built inside the image (as for vacancy-grabber, step 14a); Node and Composer are not needed on the server. On a small VPS lower the Node heap: `docker compose -f docker-compose.prod.yaml --env-file .env.prod.local build --build-arg NODE_MAX_OLD_SPACE=1024`.
+The frontend is built inside the image (as for vacancy-grabber, step 14a); Node and Composer are not needed on the server. On a small VPS lower the Node heap: `docker compose -f docker-compose.prod.yaml -f docker-compose.traefik.yaml --env-file .env.prod.local build --build-arg NODE_MAX_OLD_SPACE=1024`.
 
 The queue worker is optional and is switched on with the `worker` profile; start it only if the project uses async messages:
 
 ```bash
-docker compose -f docker-compose.prod.yaml --env-file .env.prod.local --profile worker up -d
-docker compose -f docker-compose.prod.yaml --env-file .env.prod.local ps                     # messenger-worker Up
+docker compose -f docker-compose.prod.yaml -f docker-compose.traefik.yaml --env-file .env.prod.local --profile worker up -d
+docker compose -f docker-compose.prod.yaml -f docker-compose.traefik.yaml --env-file .env.prod.local ps                     # messenger-worker Up
 ```
 
 ### 22.6 Administrator and first data
 
-Look for a console command that creates a user: `docker compose -f docker-compose.prod.yaml --env-file .env.prod.local exec php-fpm php bin/console list | grep -i -E 'user|admin'`. If there is none, either restore a database dump from your local machine (like step 17, "Restore", with `cms` instead of the long compose command):
+Look for a console command that creates a user: `docker compose -f docker-compose.prod.yaml -f docker-compose.traefik.yaml --env-file .env.prod.local exec php-fpm php bin/console list | grep -i -E 'user|admin'`. If there is none, either restore a database dump from your local machine (like step 17, "Restore", with `cms` instead of the long compose command):
 
 ```bash
 scp cms-admin.sql.gz dad@100.91.57.78:/home/dad/workspace/backups/dump/
-gunzip -c /home/dad/workspace/backups/dump/cms-admin.sql.gz | docker compose -f docker-compose.prod.yaml --env-file .env.prod.local exec -T mysql sh -c 'exec mysql -uroot -p"$MYSQL_ROOT_PASSWORD" "$MYSQL_DATABASE"'
+gunzip -c /home/dad/workspace/backups/dump/cms-admin.sql.gz | docker compose -f docker-compose.prod.yaml -f docker-compose.traefik.yaml --env-file .env.prod.local exec -T mysql sh -c 'exec mysql -uroot -p"$MYSQL_ROOT_PASSWORD" "$MYSQL_DATABASE"'
 ```
 
-or insert the user through `docker compose -f docker-compose.prod.yaml --env-file .env.prod.local exec mysql mysql -uroot -p cms_admin`, with the password hash from `docker compose -f docker-compose.prod.yaml --env-file .env.prod.local exec php-fpm php bin/console security:hash-password`. Files uploaded through elFinder live in the `uploaded` volume; to copy existing ones into it: `docker cp ./uploaded/. cms-admin-prod-php-fpm-1:/var/www/html/public/uploaded/`.
+or insert the user through `docker compose -f docker-compose.prod.yaml -f docker-compose.traefik.yaml --env-file .env.prod.local exec mysql mysql -uroot -p cms_admin`, with the password hash from `docker compose -f docker-compose.prod.yaml -f docker-compose.traefik.yaml --env-file .env.prod.local exec php-fpm php bin/console security:hash-password`. Files uploaded through elFinder live in the `uploaded` volume; to copy existing ones into it: `docker cp ./uploaded/. cms-admin-prod-php-fpm-1:/var/www/html/public/uploaded/`.
 
 ### 22.7 Verify
 
@@ -196,7 +249,7 @@ In the browser: `https://cms.lucked.me/admin` loads with styles, login works (co
 ```bash
 cd /home/dad/workspace/www/cms
 git pull
-docker compose -f docker-compose.prod.yaml --env-file .env.prod.local up -d --build          # migrations run automatically (RUN_MIGRATIONS=1)
+docker compose -f docker-compose.prod.yaml -f docker-compose.traefik.yaml --env-file .env.prod.local up -d --build          # migrations run automatically (RUN_MIGRATIONS=1)
 docker image prune -f
 ```
 
@@ -209,7 +262,7 @@ Same pattern as step 17, plus the uploaded files. Create `/home/dad/workspace/ba
 set -euo pipefail
 cd /home/dad/workspace/www/cms
 STAMP=$(date +%F_%H%M)
-docker compose -p cms-admin-prod -f docker-compose.prod.yaml --env-file .env.prod.local exec -T mysql \
+docker compose -p cms-admin-prod -f docker-compose.prod.yaml -f docker-compose.traefik.yaml --env-file .env.prod.local exec -T mysql \
   sh -c 'exec mysqldump --single-transaction --routines -uroot -p"$MYSQL_ROOT_PASSWORD" "$MYSQL_DATABASE"' \
   | gzip > /home/dad/workspace/backups/dump/cms-admin-$STAMP.sql.gz
 # uploaded files (named volume cms-admin-prod_uploaded)
@@ -228,20 +281,20 @@ chmod 700 /home/dad/workspace/backups/backup-cms.sh
 
 ### 22.10 Rollback / removal and troubleshooting
 
-- Take the site offline only: delete the `cms` route in the tunnel (Zero Trust → Tunnels → `vps`), or `docker compose -f docker-compose.prod.yaml --env-file .env.prod.local stop nginx`.
-- Stop everything, keep data: `docker compose -f docker-compose.prod.yaml --env-file .env.prod.local down`.
-- Full removal (**destroys the database and the uploads**; back up first): `docker compose -f docker-compose.prod.yaml --env-file .env.prod.local down -v`, then `rm -rf /home/dad/workspace/www/cms`.
+- Take the site offline only: delete the `cms` route in the tunnel (Zero Trust → Tunnels → `vps`), or `docker compose -f docker-compose.prod.yaml -f docker-compose.traefik.yaml --env-file .env.prod.local stop nginx`.
+- Stop everything, keep data: `docker compose -f docker-compose.prod.yaml -f docker-compose.traefik.yaml --env-file .env.prod.local down`.
+- Full removal (**destroys the database and the uploads**; back up first): `docker compose -f docker-compose.prod.yaml -f docker-compose.traefik.yaml --env-file .env.prod.local down -v`, then `rm -rf /home/dad/workspace/www/cms`.
 
 | Symptom | Cause / fix |
 |---|---|
-| `404 page not found` from Traefik on `/admin` or `/api` | `dynamic/cms.yaml` is missing or has an error (`docker compose logs traefik` in `infrastructure/`), or the host is not `cms.lucked.me`. |
-| `404 page not found` from Traefik on `/` | The router rule in `dynamic/cms.yaml` lacks ``Path(`/`)``: copy the rule from 22.4 (Traefik reloads the file itself). |
-| Admin page without styles / broken images | `/assets`, `/bundles` or `/uploaded` is missing from the router rule in `dynamic/cms.yaml` (22.4). |
-| `Bind for 0.0.0.0:80 failed: port is already allocated` | `HTTP_PORT` in `.env.prod.local` is still the dist value `80` (or a shell variable `HTTP_PORT` overrides it: `echo "$HTTP_PORT"` must be empty): set `HTTP_PORT=172.17.0.1:8081`, then `docker compose -f docker-compose.prod.yaml --env-file .env.prod.local up -d`. |
+| `404 page not found` from Traefik on `/admin` or `/api` | `docker-compose.traefik.yaml` was not passed with `-f` (the nginx container has no labels: `docker inspect cms-admin-prod-nginx-1 \| grep traefik`), nginx is not in the `reverse-proxy` network, or the host is not `cms.lucked.me`. |
+| `404 page not found` from Traefik on `/` | The router rule in `docker-compose.traefik.yaml` lacks ``Path(`/`)``: copy the rule from 22.4 and recreate nginx (`up -d`). |
+| Admin page without styles / broken images | `/assets`, `/bundles` or `/uploaded` is missing from the router rule in `docker-compose.traefik.yaml` (22.4). |
+| `Bind for 0.0.0.0:80 failed: port is already allocated` | `docker-compose.traefik.yaml` was not passed with `-f`, so the repo's `${HTTP_PORT:-80}:80` is published again: add it to the command (22.4). |
 | `502` from Cloudflare | The tunnel route URL is not `http://traefik:80`, or the `cms` hostname is missing in the tunnel. |
 | Links with `http://`, wrong client IP | `forwardedheaders.trustedips` is missing in Traefik (18.3). |
-| Login redirects to a wrong host | `DEFAULT_URI` is not `https://cms.lucked.me/`; then `docker compose -f docker-compose.prod.yaml --env-file .env.prod.local up -d`. |
-| `502`/`504` from Traefik on `/admin` | nginx is not up (`docker compose -f docker-compose.prod.yaml --env-file .env.prod.local ps`), `HTTP_PORT` is not the docker0 address (`ip -4 addr show docker0`), or ufw blocks 8081 (`sudo ufw allow from 172.16.0.0/12 to any port 8081 proto tcp`). |
+| Login redirects to a wrong host | `DEFAULT_URI` is not `https://cms.lucked.me/`; then `docker compose -f docker-compose.prod.yaml -f docker-compose.traefik.yaml --env-file .env.prod.local up -d`. |
+| `502`/`504` from Traefik on `/admin` | nginx or php-fpm is not up (`docker compose -f docker-compose.prod.yaml -f docker-compose.traefik.yaml --env-file .env.prod.local ps`), or nginx is not in the `reverse-proxy` network (`docker network inspect reverse-proxy`). |
 | Build killed (137) / heap out of memory | Add swap (step 6), lower `NODE_MAX_OLD_SPACE` (22.5). |
 
 ### 22.11 The main domain root `https://cms.lucked.me/` (client website)
@@ -253,7 +306,7 @@ chmod 700 /home/dad/workspace/backups/backup-cms.sh
 When the client has its stack, put it in `/home/dad/workspace/www/cms/client` (own `docker-compose.prod.yaml`, own project name, its own `.env.prod.local`) and:
 
 1. No new tunnel route: `cms.lucked.me` is already routed to Traefik (22.1).
-2. Labels on the client's nginx service (unique names, `reverse-proxy` network, no `ports:`, no redirect, no certresolver). The low `priority` makes the admin route from `dynamic/cms.yaml` (22.4, longer rule) win for `/admin`, `/api`, `/assets`, `/bundles`, `/uploaded`; everything else goes to the client:
+2. Labels on the client's nginx service (unique names, `reverse-proxy` network, no `ports:`, no redirect, no certresolver). The low `priority` makes the admin route from `docker-compose.traefik.yaml` (22.4, longer rule) win for `/admin`, `/api`, `/assets`, `/bundles`, `/uploaded`; everything else goes to the client:
    ```yaml
    labels:
        - traefik.enable=true
@@ -264,5 +317,5 @@ When the client has its stack, put it in `/home/dad/workspace/www/cms/client` (o
        - traefik.http.routers.cms-client.entrypoints=web
    ```
    Caveat: the client's own static files must not live under `/assets`, `/bundles` or `/uploaded` (they would be sent to the admin); use another prefix such as `/build` or `/static`.
-3. Its environment: `CLIENT_DOMAIN=cms.lucked.me`, `DEFAULT_URI=https://cms.lucked.me/`, `CMS_ADMIN_API_AUTH_URL=https://cms.lucked.me/api/sites/auth/`, `CMS_ADMIN_API_CONTENT_URL=https://cms.lucked.me/api/sites/<site id>/`. The client container reaches the API through the public name (Cloudflare), so no extra docker network is needed. Remove ``Path(`/`) ||`` from the router rule in `dynamic/cms.yaml` (22.4), so `/` goes to the client instead of the admin redirect.
+3. Its environment: `CLIENT_DOMAIN=cms.lucked.me`, `DEFAULT_URI=https://cms.lucked.me/`, `CMS_ADMIN_API_AUTH_URL=https://cms.lucked.me/api/sites/auth/`, `CMS_ADMIN_API_CONTENT_URL=https://cms.lucked.me/api/sites/<site id>/`. The client container reaches the API through the public name (Cloudflare), so no extra docker network is needed. Remove ``Path(`/`) ||`` from the router rule in `docker-compose.traefik.yaml` (22.4), so `/` goes to the client instead of the admin redirect.
 4. Verify: `curl -sI https://cms.lucked.me/ | head -3`, and open a page that shows content from the admin.
